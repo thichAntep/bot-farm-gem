@@ -1,77 +1,98 @@
-import os
-import sys
 import cv2
 import numpy as np
-import pyautogui
-
-# 1. THIẾT LẬP MÔI TRƯỜNG NGAY LẬP TỨC TRƯỚC KHI IMPORT TORCH
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-os.environ["OMP_NUM_THREADS"] = "1" # Ép CPU chỉ dùng 1 luồng để tránh lỗi xung đột bộ nhớ
-
-model = None
-
-def resource_path(relative_path):
-    if getattr(sys, 'frozen', False):
-        # Khi chạy bằng file .exe
-        base_path = os.path.dirname(sys.executable)
-    else:
-        # Khi chạy bằng file .py
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
-
-def load_model():
-    global model
-    if model is None:
-        print("🔄 Loading model...")
-        
-        # 2. ĐƯA IMPORT VÀO TRONG HÀM
-        # Đảm bảo torch chỉ được gọi sau khi os.environ đã kích hoạt
-        import torch
-        from ultralytics import YOLO
-        
-        torch.set_num_threads(1)
-        
-        model_path = resource_path("best.pt") 
-        
-        # Thêm check để báo lỗi rõ ràng nếu quên copy file best.pt
-        if not os.path.exists(model_path):
-            print(f"❌ LỖI: Không tìm thấy file {model_path}!")
-            print("Vui lòng copy file best.pt để cùng thư mục với file .exe")
-            sys.exit(1)
-            
-        model = YOLO(model_path, task='detect') # Ép task='detect' cho an toàn
-        # model.to("cpu") # Không cần thiết vì YOLO tự động nhận diện CPU nếu không có CUDA
-        print("✅ Model loaded successfully on CPU")
-
-SCAN_REGION = (100,50,1200,700)
-CONF_THRESHOLD = 0.1
-
+import mss
+import math
+from resource_path import resource_path
 def scan_gem():
-    load_model()
+    # ================= KHỞI TẠO 1 LẦN DUY NHẤT =================
+    if not hasattr(scan_gem, "is_initialized"):
+        # Xóa dòng scan_gem.sct = mss.mss() vì mss không an toàn khi truyền qua lại giữa các thread
+        
+        # 1. Danh sách 7 regions
+        scan_gem.regions = [
+            (5, 50, 500, 390),
+            (0, 350, 600, 300),
+            (460, 50, 520, 300),
+            (560, 300, 450, 370),
+            (520, 610, 500, 210),
+            (950, 50, 320, 350),
+            (950, 400, 350, 300)
+        ]
+        
+        # 2. KHAI BÁO TÊN ẢNH
+        image_files_per_region = [
+            ["images/gem_vung_11.png", "images/gem_vung_12.png"], 
+            ["images/gem_vung_21.png", "images/gem_vung_22.png"],                       
+            ["images/gem_vung_31.png",  "images/gem_vung_32.png"],                       
+            ["images/gem_vung_41.png",  "images/gem_vung_42.png"],                       
+            ["images/gem_vung_51.png",  "images/gem_vung_52.png"],                       
+            ["images/gem_vung_61.png",  "images/gem_vung_62.png"],                       
+            ["images/gem_vung_71.png",  "images/gem_vung_72.png"]                        
+        ]
+        
+        # 3. Load toàn bộ ảnh vào RAM
+        scan_gem.templates = []
+        for file_list in image_files_per_region:
+            region_templates = []
+            for file_name in file_list:
+                full_path = resource_path(file_name)
+                img = cv2.imread(full_path, 0)
+                if img is not None:
+                    region_templates.append({"name": file_name, "img": img})
+                else:
+                    print(f"[Cảnh báo] Không tìm thấy file ảnh: {full_path}")
+            scan_gem.templates.append(region_templates)
+            
+        scan_gem.is_initialized = True
 
-    screenshot = pyautogui.screenshot(region=SCAN_REGION)
-    frame = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+    # ================= BẮT ĐẦU QUÉT =================
+    # 1. Chụp toàn màn hình
+    with mss.mss() as sct:
+        monitor = sct.monitors[1]
+        screen = np.array(sct.grab(monitor))
+    screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGRA2GRAY)
+    
+    # Tính tọa độ trung tâm của màn hình
+    screen_center_x = monitor["left"] + monitor["width"] // 2
+    screen_center_y = monitor["top"] + monitor["height"] // 2
+    
+    closest_center = None
+    min_distance = float('inf') # Khởi tạo khoảng cách nhỏ nhất là vô cực
+    
+    # 2. Duyệt qua 7 vùng
+    for i, region in enumerate(scan_gem.regions):
+        x, y, w, h = region
+        region_templates = scan_gem.templates[i]
+        
+        if not region_templates:
+            continue
+            
+        region_img = screen_gray[y:y+h, x:x+w]
+        
+        # 3. Quét các ảnh
+        for template in region_templates:
+            temp_img = template["img"]
+            th, tw = temp_img.shape
+            
+            if th > h or tw > w:
+                continue
+                
+            res = cv2.matchTemplate(region_img, temp_img, cv2.TM_CCOEFF_NORMED)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+            
+            if max_val >= 0.85: 
+                center_x = x + max_loc[0] + (tw // 2)
+                center_y = y + max_loc[1] + (th // 2)
+                
+                # Tính khoảng cách bình phương từ gem này tới trung tâm màn hình (dùng bình phương cho nhẹ máy, ko cần sqrt)
+                distance = (center_x - screen_center_x)**2 + (center_y - screen_center_y)**2
+                
+                # Cập nhật nếu tìm thấy gem gần trung tâm hơn
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_center = (center_x, center_y)
+                
+    # Chỉ trả về duy nhất 1 tọa độ (hoặc None nếu không thấy)
+    return closest_center
 
-    # Đưa ảnh vào model (đảm bảo import không bị gọi ra ngoài)
-    results = model(frame, conf=CONF_THRESHOLD, device="cpu", verbose=False)
-
-    best_point = None
-    best_dist = 999999
-
-    for r in results:
-        for box in r.boxes:
-            x1,y1,x2,y2 = box.xyxy[0].cpu().numpy() # Ép về numpy mảng an toàn
-
-            cx = int((x1+x2)/2)
-            cy = int((y1+y2)/2)
-
-            dist = (cx-720)**2 + (cy-430)**2
-
-            if dist < best_dist:
-                best_dist = dist
-                real_x = cx + SCAN_REGION[0]
-                real_y = cy + SCAN_REGION[1]
-                best_point = (real_x, real_y)
-
-    return best_point
+        

@@ -1,13 +1,16 @@
 import threading
 import time
 import sys
+import os
 import tkinter as tk
 from tkinter import ttk
+from tkinter import messagebox
 import queue
 import keyboard
 import pyautogui
 import random
 import ctypes
+import requests
 
 # ===== IMPORT BOT MODULE =====
 from scan_gem_img import scan_gem
@@ -26,7 +29,43 @@ import like_human
 import farm_region
 # =======================
 
-def run():
+def run(username=None, device_id=None):
+    # =============================
+    # MULTI-LOGIN CHERCKER THREAD
+    # =============================
+    def heartbeat_thread():
+        # URL API để kiểm tra xem device_id hiện tại có còn hợp lệ Không
+        API_VERIFY_URL = "https://rok-login-server.onrender.com/api/verify_session"
+        while True:
+            time.sleep(15)  # Cứ 15 giây ping server báo còn sống / kiểm tra ai đăng nhập máy khác ko
+            if username and device_id:
+                try:
+                    payload = {"username": username, "device_id": device_id}
+                    res = requests.post(API_VERIFY_URL, json=payload, timeout=10)
+                    if res.status_code == 200:
+                        data = res.json()
+                        # Nếu server trả về success/valid = false => Bị đăng nhập từ thiết bị khác
+                        if data.get("valid") is False or data.get("success") is False:
+                            print("\n[!] TÀI KHOẢN ĐÃ ĐƯỢC ĐĂNG NHẬP Ở THIẾT BỊ KHÁC!")
+                            global BOT_RUNNING, BOT_PAUSE
+                            BOT_RUNNING = False
+                            BOT_PAUSE = False
+                            
+                            try:
+                                root.after(0, lambda: [
+                                    messagebox.showerror("Bị Đăng Xuất", "Tài khoản của bạn đã được đăng nhập từ một thiết bị khác! Bot sẽ tự đóng."),
+                                    os._exit(0)
+                                ])
+                            except Exception:
+                                print("Đóng theo os._exit(0)")
+                                os._exit(0)
+                            break
+                except Exception as e:
+                    pass
+
+    if username and device_id:
+        threading.Thread(target=heartbeat_thread, daemon=True).start()
+
     # =============================
     # CONFIG 
     # =============================
@@ -337,6 +376,20 @@ def run():
             print("\n❌ Số đạo không hợp lệ")
             BOT_RUNNING = False
             return
+            
+        # Cập nhật tọa độ farm region nếu được bật
+        if use_farm_region_var.get():
+            coords_dict = {}
+            for i in range(max_dao):
+                try:
+                    cx = int(dao_x_vars[i].get())
+                    cy = int(dao_y_vars[i].get())
+                    coords_dict[i+1] = (cx, cy)
+                except Exception as e:
+                    print(f"Lỗi đọc tọa độ đạo {i+1}, dùng mặc định (0,0)")
+                    coords_dict[i+1] = (0, 0)
+            farm_region.set_farm_coordinates(coords_dict)
+            print(f"\n✅ Đã truyền tọa độ farm cho {max_dao} đạo.")
 
         threading.Thread(target=bot_loop, args=(max_dao,), daemon=True).start()
         print("\n🚀 Bot started")
@@ -449,6 +502,50 @@ def run():
     # ==========================
 
     setting_frame.columnconfigure(2, weight=1)
+
+    # --- Frame cấu hình tọa độ cho từng đạo ---
+    farm_coord_frame = ttk.LabelFrame(main, text="📍 Tọa độ Vùng Farm", padding=12)
+    farm_coord_frame.pack(fill="x", pady=8)
+    
+    global dao_x_vars, dao_y_vars
+    dao_x_vars = []
+    dao_y_vars = []
+    
+    # Tạo sẵn 7 dòng nhập liệu cho 7 đạo
+    for i in range(7):
+        ttk.Label(farm_coord_frame, text=f"Đạo {i+1} : X =").grid(row=i//2, column=(i%2)*4, sticky="e", padx=(10, 2), pady=4)
+        x_var = tk.StringVar(value="0")
+        ttk.Entry(farm_coord_frame, width=5, textvariable=x_var, font=("Consolas", 11)).grid(row=i//2, column=(i%2)*4 + 1, padx=2, pady=4)
+        dao_x_vars.append(x_var)
+        
+        ttk.Label(farm_coord_frame, text="Y =").grid(row=i//2, column=(i%2)*4 + 2, sticky="e", padx=(5, 2), pady=4)
+        y_var = tk.StringVar(value="0")
+        ttk.Entry(farm_coord_frame, width=5, textvariable=y_var, font=("Consolas", 11)).grid(row=i//2, column=(i%2)*4 + 3, sticky="w", padx=2, pady=4)
+        dao_y_vars.append(y_var)
+
+    def auto_fill_coords():
+        try:
+            base_x = int(dao_x_vars[0].get())
+            base_y = int(dao_y_vars[0].get())
+            for idx in range(1, 7):
+                dao_x_vars[idx].set(str(base_x - idx * 50))
+                dao_y_vars[idx].set(str(base_y - idx * 50))
+            print("\n✅ Đã điền nhanh tọa độ cho các đạo còn lại!")
+        except ValueError:
+            print("\n❌ Vui lòng nhập tọa độ hợp lệ cho Đạo 1 trước khi bấm điền nhanh.")
+
+    ttk.Button(farm_coord_frame, text="⚡ Điền nhanh (từ Đạo 1, trừ 50)", command=auto_fill_coords).grid(row=4, column=0, columnspan=8, pady=(10, 0))
+
+    def toggle_farm_coord_frame(*args):
+        if use_farm_region_var.get():
+            try:
+                farm_coord_frame.pack(fill="x", pady=8, before=btn_frame)
+            except tk.TclError:
+                farm_coord_frame.pack(fill="x", pady=8)
+        else:
+            farm_coord_frame.pack_forget()
+
+    use_farm_region_var.trace_add("write", toggle_farm_coord_frame)
 
     btn_frame = ttk.Frame(main)
     btn_frame.pack(fill="x", pady=12)

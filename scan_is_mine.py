@@ -29,13 +29,16 @@ def check_is_mine():
             continue
 
         result = cv2.matchTemplate(frame, template, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, _ = cv2.minMaxLoc(result)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
         print(f"🔍 Check {img_path} → {round(max_val,2)}")
 
         if max_val >= CONF:
             print("⛏ Đây là mỏ (match:", img_path, ")")
-            return True
+            h, w = template.shape[:2]
+            center_x = 450 + max_loc[0] + w // 2
+            center_y = 320 + max_loc[1] + h // 2
+            return (center_x, center_y)
 
     print("❌ Không phải mỏ")
     return False
